@@ -1,6 +1,9 @@
+@file:Deterministic
 package net.corda.core.serialization
 
+import net.corda.core.Deterministic
 import net.corda.core.DoNotImplement
+import net.corda.core.NonDeterministic
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.sha256
 import net.corda.core.serialization.internal.effectiveSerializationEnv
@@ -106,6 +109,7 @@ interface SerializationEncoding
 /**
  * Parameters to serialization and deserialization.
  */
+@Deterministic
 @DoNotImplement
 interface SerializationContext {
     /**
@@ -155,6 +159,7 @@ interface SerializationContext {
     /**
      * Helper method to return a new context based on this context with the deserialization class loader changed.
      */
+    @NonDeterministic
     fun withClassLoader(classLoader: ClassLoader): SerializationContext
 
     /**
@@ -182,6 +187,7 @@ interface SerializationContext {
     /**
      * The use case that we are serializing for, since it influences the implementations chosen.
      */
+    @Deterministic
     enum class UseCase { P2P, RPCServer, RPCClient, Storage, Checkpoint, Testing }
 }
 
@@ -190,6 +196,7 @@ interface SerializationContext {
  * others being set that aren't keyed on this enumeration, but for general use properties adding a
  * well known key here is preferred.
  */
+@Deterministic
 enum class ContextPropertyKeys {
     SERIALIZERS
 }
@@ -197,13 +204,14 @@ enum class ContextPropertyKeys {
 /**
  * Global singletons to be used as defaults that are injected elsewhere (generally, in the node or in RPC client).
  */
+@Deterministic
 object SerializationDefaults {
     val SERIALIZATION_FACTORY get() = effectiveSerializationEnv.serializationFactory
     val P2P_CONTEXT get() = effectiveSerializationEnv.p2pContext
-    val RPC_SERVER_CONTEXT get() = effectiveSerializationEnv.rpcServerContext
-    val RPC_CLIENT_CONTEXT get() = effectiveSerializationEnv.rpcClientContext
-    val STORAGE_CONTEXT get() = effectiveSerializationEnv.storageContext
-    val CHECKPOINT_CONTEXT get() = effectiveSerializationEnv.checkpointContext
+    @NonDeterministic val RPC_SERVER_CONTEXT get() = effectiveSerializationEnv.rpcServerContext
+    @NonDeterministic val RPC_CLIENT_CONTEXT get() = effectiveSerializationEnv.rpcClientContext
+    @NonDeterministic val STORAGE_CONTEXT get() = effectiveSerializationEnv.storageContext
+    @NonDeterministic val CHECKPOINT_CONTEXT get() = effectiveSerializationEnv.checkpointContext
 }
 
 /**
@@ -243,6 +251,7 @@ inline fun <reified T : Any> ByteArray.deserialize(serializationFactory: Seriali
 /**
  * Convenience extension method for deserializing a JDBC Blob, utilising the defaults.
  */
+@NonDeterministic
 inline fun <reified T : Any> Blob.deserialize(serializationFactory: SerializationFactory = SerializationFactory.defaultFactory,
                                               context: SerializationContext = serializationFactory.defaultContext): T {
     return this.getBytes(1, this.length().toInt()).deserialize(serializationFactory, context)
@@ -261,15 +270,18 @@ fun <T : Any> T.serialize(serializationFactory: SerializationFactory = Serializa
  * to get the original object back.
  */
 @Suppress("unused")
+@Deterministic
 class SerializedBytes<T : Any>(bytes: ByteArray) : OpaqueBytes(bytes) {
     // It's OK to use lazy here because SerializedBytes is configured to use the ImmutableClassSerializer.
     val hash: SecureHash by lazy { bytes.sha256() }
 }
 
+@Deterministic
 interface ClassWhitelist {
     fun hasListed(type: Class<*>): Boolean
 }
 
+@Deterministic
 @DoNotImplement
 interface EncodingWhitelist {
     fun acceptEncoding(encoding: SerializationEncoding): Boolean
