@@ -7,6 +7,7 @@ import net.corda.core.flows.FlowSession
 import net.corda.core.flows.InitiatedBy
 import net.corda.core.flows.InitiatingFlow
 import net.corda.core.identity.Party
+import net.corda.core.internal.packageName
 import net.corda.core.messaging.MessageRecipients
 import net.corda.core.utilities.getOrThrow
 import net.corda.core.utilities.unwrap
@@ -18,7 +19,8 @@ import net.corda.testing.node.internal.InternalMockNetwork
 import net.corda.testing.node.internal.MessagingServiceSpy
 import net.corda.testing.node.internal.newContext
 import net.corda.testing.node.internal.setMessagingServiceSpy
-import org.assertj.core.api.Assertions
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.hibernate.exception.ConstraintViolationException
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -35,7 +37,7 @@ class RetryFlowMockTest {
 
     @Before
     fun start() {
-        mockNet = InternalMockNetwork(threadPerNode = true, cordappPackages = listOf(this.javaClass.`package`.name))
+        mockNet = InternalMockNetwork(threadPerNode = true, cordappPackages = listOf(this.javaClass.packageName))
         internalNodeA = mockNet.createNode()
         internalNodeB = mockNet.createNode()
         mockNet.startNodes()
@@ -44,7 +46,9 @@ class RetryFlowMockTest {
         RetryInsertFlow.count = 0
     }
 
-    private fun <T> StartedNode<InternalMockNetwork.MockNode>.startFlow(logic: FlowLogic<T>): CordaFuture<T> = this.services.startFlow(logic, this.services.newContext()).getOrThrow().resultFuture
+    private fun <T> StartedNode<InternalMockNetwork.MockNode>.startFlow(logic: FlowLogic<T>): CordaFuture<T> {
+        return this.services.startFlow(logic, this.services.newContext()).getOrThrow().resultFuture
+    }
 
     @After
     fun cleanUp() {
@@ -59,7 +63,7 @@ class RetryFlowMockTest {
 
     @Test
     fun `Retry forever`() {
-        Assertions.assertThatThrownBy {
+        assertThatThrownBy {
             internalNodeA.startFlow(RetryFlow(Int.MAX_VALUE)).getOrThrow()
         }.isInstanceOf(LimitedRetryCausingError::class.java)
         assertEquals(5, RetryFlow.count)
@@ -90,16 +94,16 @@ class RetryFlowMockTest {
     @Test
     fun `Patient records do not leak in hospital`() {
         assertEquals(Unit, internalNodeA.startFlow(RetryFlow(1)).get())
-        assertEquals(0, StaffedFlowHospital.numberOfPatients)
+        assertEquals(0, StaffedFlowHospital.patients.size)
         assertEquals(2, RetryFlow.count)
     }
 }
 
-class LimitedRetryCausingError : org.hibernate.exception.ConstraintViolationException("Test message", SQLException(), "Test constraint")
+class LimitedRetryCausingError : ConstraintViolationException("Test message", SQLException(), "Test constraint")
 
 class RetryCausingError : SQLException("deadlock")
 
-class RetryFlow(val i: Int) : FlowLogic<Unit>() {
+class RetryFlow(private val i: Int) : FlowLogic<Unit>() {
     companion object {
         var count = 0
     }
@@ -118,7 +122,7 @@ class RetryFlow(val i: Int) : FlowLogic<Unit>() {
 }
 
 @InitiatingFlow
-class SendAndRetryFlow(val i: Int, val other: Party) : FlowLogic<Unit>() {
+class SendAndRetryFlow(private val i: Int, private val other: Party) : FlowLogic<Unit>() {
     companion object {
         var count = 0
     }
@@ -134,8 +138,9 @@ class SendAndRetryFlow(val i: Int, val other: Party) : FlowLogic<Unit>() {
     }
 }
 
+@Suppress("unused")
 @InitiatedBy(SendAndRetryFlow::class)
-class ReceiveFlow2(val other: FlowSession) : FlowLogic<Unit>() {
+class ReceiveFlow2(private val other: FlowSession) : FlowLogic<Unit>() {
     @Suspendable
     override fun call() {
         val received = other.receive<String>().unwrap { it }
@@ -143,7 +148,7 @@ class ReceiveFlow2(val other: FlowSession) : FlowLogic<Unit>() {
     }
 }
 
-class RetryInsertFlow(val i: Int) : FlowLogic<Unit>() {
+class RetryInsertFlow(private val i: Int) : FlowLogic<Unit>() {
     companion object {
         var count = 0
     }

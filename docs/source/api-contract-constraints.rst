@@ -132,6 +132,23 @@ you require the hash of the node's installed app which supplies the specified co
 hash constraints, you almost always want "whatever the current code is" and not a hard-coded hash. So this automatic
 constraint placeholder is useful.
 
+FinalityFlow
+------------
+
+It's possible to encounter contract contraint issues when notarising transactions with the ``FinalityFlow`` on a network
+containing multiple versions of the same CorDapp. This will happen when using hash contraints or with zone contraints
+if the zone whitelist has missing CorDapp versions. If a participating party fails to validate a notarised transaction
+received via ``FinalityFlow`` then we have a scenerio where the members of the network have an inconsistent view of the
+ledger.
+
+For this reason if the flow that received the finalised transactions encounters any errors then it's sent to the flow
+hospital. From there it's suspended waiting to be retried on node restart. This gives the node operator the opportunity
+to recover from the errors, which in the case of contract constraint voilations either means updating the CorDapp or adding
+its hash to the zone whitelist.
+
+.. note:: This is a temporary issue in the current version of Corda, until we implement some missing features which will
+   enable a seemless handling of differing of CorDapp versions.
+
 CorDapps as attachments
 -----------------------
 

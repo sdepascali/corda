@@ -722,7 +722,7 @@ class SingleThreadedStateMachineManager(
         require(lastState.pendingDeduplicationHandlers.isEmpty())
         require(lastState.isRemoved)
         require(lastState.checkpoint.subFlowStack.size == 1)
-        sessionToFlow.none { it.value == flow.fiber.id }
+        require(flow.fiber.id !in sessionToFlow.values)
         flow.resultFuture.set(removalReason.flowReturnValue)
         lastState.flowLogic.progressTracker?.currentStep = ProgressTracker.DONE
         changesPublisher.onNext(StateMachineManager.Change.Removed(lastState.flowLogic, Try.Success(removalReason.flowReturnValue)))
