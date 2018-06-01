@@ -13,10 +13,7 @@ import net.corda.core.flows.FlowInfo
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StateMachineRunId
 import net.corda.core.identity.Party
-import net.corda.core.internal.FlowStateMachine
-import net.corda.core.internal.ThreadBox
-import net.corda.core.internal.bufferUntilSubscribed
-import net.corda.core.internal.castIfPossible
+import net.corda.core.internal.*
 import net.corda.core.internal.concurrent.OpenFuture
 import net.corda.core.internal.concurrent.map
 import net.corda.core.internal.concurrent.openFuture
@@ -52,11 +49,11 @@ import rx.Observable
 import rx.subjects.PublishSubject
 import java.security.SecureRandom
 import java.util.*
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutorService
+import java.util.concurrent.*
 import java.util.concurrent.locks.ReentrantLock
 import javax.annotation.concurrent.ThreadSafe
 import kotlin.collections.ArrayList
+import kotlin.collections.HashMap
 import kotlin.concurrent.withLock
 import kotlin.streams.toList
 
@@ -84,14 +81,17 @@ class SingleThreadedStateMachineManager(
     // property.
     private class InnerState {
         val changesPublisher = PublishSubject.create<StateMachineManager.Change>()!!
-        // True if we're shutting down, so don't resume anything.
+        /** True if we're shutting down, so don't resume anything. */
         var stopping = false
         val flows = HashMap<StateMachineRunId, Flow>()
         val startedFutures = HashMap<StateMachineRunId, OpenFuture<Unit>>()
+        /** Flows scheduled to be retried if not finished until a specified timeout. */
+        val flowsToRetry = HashMap<StateMachineRunId, ScheduledFuture<*>>()
     }
 
     private val mutex = ThreadBox(InnerState())
     private val scheduler = FiberExecutorScheduler("Same thread scheduler", executor)
+    private val retryScheduler = Executors.newScheduledThreadPool(1)
     // How many Fibers are running and not suspended.  If zero and stopping is true, then we are halted.
     private val liveFibers = ReusableLatch()
     // Monitoring support.
@@ -206,8 +206,8 @@ class SingleThreadedStateMachineManager(
     }
 
     override fun killFlow(id: StateMachineRunId): Boolean {
-
         return mutex.locked {
+            cancelRetryIfScheduled(id)
             val flow = flows.remove(id)
             if (flow != null) {
                 logger.debug("Killing flow known to physical node.")
@@ -259,6 +259,7 @@ class SingleThreadedStateMachineManager(
 
     override fun removeFlow(flowId: StateMachineRunId, removalReason: FlowRemovalReason, lastState: StateMachineState) {
         mutex.locked {
+            cancelRetryIfScheduled(flowId)
             val flow = flows.remove(flowId)
             if (flow != null) {
                 decrementLiveFibers()
@@ -423,7 +424,7 @@ class SingleThreadedStateMachineManager(
                                 "unknown session $recipientId, discarding..."
                     }
                 } else {
-                    throw IllegalArgumentException("Cannot find flow corresponding to session ID $recipientId")
+                    logger.info("Cannot find flow corresponding to session ID $recipientId.")
                 }
             } else {
                 val flow = mutex.locked { flows[flowId] } ?: throw IllegalStateException("Cannot find fiber corresponding to ID $flowId")
@@ -551,6 +552,29 @@ class SingleThreadedStateMachineManager(
         return startedFuture.map { flowStateMachineImpl as FlowStateMachine<A> }
     }
 
+    private fun InnerState.scheduleRetry(flowId: StateMachineRunId) {
+        mutex.locked {
+            val flow = flows[flowId]
+            if (flow != null) {
+                val delay = (flow.fiber.logic as RetryableFlow).retryTimeout
+                val retryFuture = retryScheduler.schedule({
+                    val event = Event.Error(FlowRetryException)
+                    flow.fiber.scheduleEvent(event)
+                }, delay.seconds, TimeUnit.SECONDS)
+                flowsToRetry[flowId] = retryFuture
+            } else {
+                logger.warn("Unable to schedule retry for flow $flowId – flow not found.")
+            }
+        }
+    }
+
+    private fun InnerState.cancelRetryIfScheduled(flowId: StateMachineRunId) {
+        flowsToRetry[flowId]?.let {
+            if (!it.isDone) it.cancel(true)
+            flowsToRetry.remove(flowId)
+        }
+    }
+
     private fun deserializeCheckpoint(serializedCheckpoint: SerializedBytes<Checkpoint>): Checkpoint? {
         return try {
             serializedCheckpoint.deserialize(context = checkpointSerializationContext!!)
@@ -658,6 +682,7 @@ class SingleThreadedStateMachineManager(
                 } else {
                     oldFlow.resultFuture.captureLater(flow.resultFuture)
                 }
+                if (flow.fiber.logic is RetryableFlow) scheduleRetry(id)
                 flow.fiber.scheduleEvent(Event.DoRemainingWork)
                 when (checkpoint.flowState) {
                     is FlowState.Unstarted -> {

@@ -1,7 +1,9 @@
 package net.corda.node.services.statemachine.transitions
 
+import net.corda.core.flows.FlowException
 import net.corda.core.flows.InitiatingFlow
 import net.corda.core.internal.FlowIORequest
+import net.corda.core.internal.FlowRetryException
 import net.corda.core.utilities.Try
 import net.corda.node.services.statemachine.Action
 import net.corda.node.services.statemachine.Checkpoint
@@ -146,19 +148,30 @@ class TopLevelTransition(
                     flowState = FlowState.Started(event.ioRequest, event.fiber),
                     numberOfSuspends = currentState.checkpoint.numberOfSuspends + 1
             )
-            actions.addAll(arrayOf(
-                    Action.PersistCheckpoint(context.id, newCheckpoint),
-                    Action.PersistDeduplicationFacts(currentState.pendingDeduplicationHandlers),
-                    Action.CommitTransaction,
-                    Action.AcknowledgeMessages(currentState.pendingDeduplicationHandlers),
-                    Action.ScheduleEvent(Event.DoRemainingWork)
-            ))
-            currentState = currentState.copy(
-                    checkpoint = newCheckpoint,
-                    pendingDeduplicationHandlers = emptyList(),
-                    isFlowResumed = false,
-                    isAnyCheckpointPersisted = true
-            )
+            if (event.maySkipCheckpoint) {
+                actions.addAll(arrayOf(
+                        Action.CommitTransaction,
+                        Action.ScheduleEvent(Event.DoRemainingWork)
+                ))
+                currentState = currentState.copy(
+                        checkpoint = newCheckpoint,
+                        isFlowResumed = false
+                )
+            } else {
+                actions.addAll(arrayOf(
+                        Action.PersistCheckpoint(context.id, newCheckpoint),
+                        Action.PersistDeduplicationFacts(currentState.pendingDeduplicationHandlers),
+                        Action.CommitTransaction,
+                        Action.AcknowledgeMessages(currentState.pendingDeduplicationHandlers),
+                        Action.ScheduleEvent(Event.DoRemainingWork)
+                ))
+                currentState = currentState.copy(
+                        checkpoint = newCheckpoint,
+                        pendingDeduplicationHandlers = emptyList(),
+                        isFlowResumed = false,
+                        isAnyCheckpointPersisted = true
+                )
+            }
             FlowContinuation.ProcessEvents
         }
     }
